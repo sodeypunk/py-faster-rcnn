@@ -108,7 +108,7 @@ class imdb(object):
             oldx2 = boxes[:, 2].copy()
             boxes[:, 0] = widths[i] - oldx2 - 1
             boxes[:, 2] = widths[i] - oldx1 - 1
-            assert (boxes[:, 2] >= boxes[:, 0]).all()
+            assert (boxes[:, 2] >= boxes[:, 0]).all(), "index is {0}".format(i)
             entry = {'boxes' : boxes,
                      'gt_overlaps' : self.roidb[i]['gt_overlaps'],
                      'gt_classes' : self.roidb[i]['gt_classes'],
@@ -242,8 +242,11 @@ class imdb(object):
             a[i]['boxes'] = np.vstack((a[i]['boxes'], b[i]['boxes']))
             a[i]['gt_classes'] = np.hstack((a[i]['gt_classes'],
                                             b[i]['gt_classes']))
-            a[i]['gt_overlaps'] = scipy.sparse.vstack([a[i]['gt_overlaps'],
-                                                       b[i]['gt_overlaps']])
+            if np.shape(a[i]['gt_overlaps'])[0] > 0:
+                a[i]['gt_overlaps'] = scipy.sparse.vstack([a[i]['gt_overlaps'],
+                                                        b[i]['gt_overlaps']])
+            else:
+                a[i]['gt_overlaps'] = b[i]['gt_overlaps']
             a[i]['seg_areas'] = np.hstack((a[i]['seg_areas'],
                                            b[i]['seg_areas']))
         return a
