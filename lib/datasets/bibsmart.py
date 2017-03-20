@@ -134,7 +134,7 @@ class bibsmart(imdb):
 
         # Get Image name for later
         imagePath = objs['filename']
-        imageName = re.findall('(\w+.\w{3})$', imagePath)
+        imageName = re.findall('([^\\/]*\.\w+)$', imagePath)
         imageName = imageName[0]
 
         # Load object bounding boxes into a data frame.
