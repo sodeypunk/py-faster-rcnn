@@ -134,7 +134,7 @@ class bibsmart(imdb):
 
         # Get Image name for later
         imagePath = objs['filename']
-        imageName = re.findall('\w+.\/(\w+.\w{3})', imagePath)
+        imageName = re.findall('(\w+.\w{3})$', imagePath)
         imageName = imageName[0]
 
         # Load object bounding boxes into a data frame.
@@ -144,25 +144,29 @@ class bibsmart(imdb):
             y1 = int(obj['y'])
             x2 = int(obj['x'])+int(obj['width'])
             y2 = int(obj['y'])+int(obj['height'])
-            #Issues with sloth annotation setting coordinates below zero
-            if (x1 < 0):
-                x1 = 0
-            if (y1 < 0):
-                y1 = 0
-            # Issues with sloth annotations greater than image width/height
-            imageName = os.path.join("/home/soda/workspace/py-faster-rcnn/data/training_images/formatted/bibsmart_devkit/data/Images", imageName)
-            img = Image.open(imageName)
-            width, height = img.size
+            confidence = 1
+            if 'confidence' in obj:
+                confidence = float(obj['confidence'])
+            if confidence > 0.98:
+                #Issues with sloth annotation setting coordinates below zero
+                if (x1 < 0):
+                    x1 = 0
+                if (y1 < 0):
+                    y1 = 0
+                # Issues with sloth annotations greater than image width/height
+                imageName = os.path.join("/home/soda/workspace/py-faster-rcnn/data/training_images/formatted/bibsmart_devkit/data/Images", imageName)
+                img = Image.open(imageName)
+                width, height = img.size
 
-            if (x2 >= width):
-                x2 = width - 1
-            if (y2 >= height):
-                y2 = height - 1
-            boxes[ix, :] = [x1, y1, x2, y2]
-            cls = self._class_to_ind['bib']
-            gt_classes[ix] = cls
-            overlaps[ix, cls] = 1.0
-            seg_areas[ix] = (x2 - x1 + 1) * (y2 - y1 + 1)
+                if (x2 >= width):
+                    x2 = width - 1
+                if (y2 >= height):
+                    y2 = height - 1
+                boxes[ix, :] = [x1, y1, x2, y2]
+                cls = self._class_to_ind['bib']
+                gt_classes[ix] = cls
+                overlaps[ix, cls] = 1.0
+                seg_areas[ix] = (x2 - x1 + 1) * (y2 - y1 + 1)
 
         overlaps = scipy.sparse.csr_matrix(overlaps)
 

@@ -11,7 +11,13 @@ __sets = {}
 
 from datasets.pascal_voc import pascal_voc
 from datasets.coco import coco
+from datasets.bibsmart import bibsmart
 import numpy as np
+
+bibsmart_devkit_path = '/home/soda/workspace/py-faster-rcnn/data/training_images/formatted/bibsmart_devkit'
+for split in ['train', 'test']:
+    name = '{}_{}'.format('bibsmart', split)
+    __sets[name] = (lambda split=split: bibsmart(split, bibsmart_devkit_path))
 
 # Set up voc_<year>_<split> using selective search "fast" mode
 for year in ['2007', '2012']:

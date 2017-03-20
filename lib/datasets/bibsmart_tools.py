@@ -127,7 +127,7 @@ if __name__ == '__main__':
     # for file in files:
     #     create_annotation_from_json(file, outputFolder)
 
-    set = "test-6"
+    set = "variety-1000"
     imagePath = "/home/soda/workspace/py-faster-rcnn/data/training_images/bibsmart/{0}/Images".format(set)
     detectionFile = "/home/soda/workspace/py-faster-rcnn/data/training_images/bibsmart/{0}/detection_gpu0_soda-desktopFalse.csv".format(set)
     create_annotation_from_detection(detectionFile, imagePath, outputFolder, set)
