@@ -22,7 +22,8 @@ def create_annotation_from_json(file, outputFolder):
             with open(outputFile, 'w') as outfile:
                 json.dump(currentData, outfile)
 
-def create_annotation_from_detection(detection_file, image_path, outputFolder, set):
+def create_annotation_from_detection(detection_file, cleaned_image_file, image_path, outputFolder, set):
+    saveImagePatch = True
     delimiter = ','
 
     with open(detection_file,'r') as det_f:
@@ -31,6 +32,12 @@ def create_annotation_from_detection(detection_file, image_path, outputFolder, s
                                quotechar = '"')
         data = [data for data in data_iter]
 
+    with open(cleaned_image_file,'r') as cleaned_f:
+        cleaned_data_iter = csv.reader(cleaned_f,
+                               delimiter = delimiter,
+                               quotechar = '"')
+        cleanedData = [cleanedData for cleanedData in cleaned_data_iter]
+
     imageGroup = ''
     annotationsList = list()
     jsonObject = OrderedDict()
@@ -38,26 +45,30 @@ def create_annotation_from_detection(detection_file, image_path, outputFolder, s
     for ix in xrange(len(data)):
         annotation = OrderedDict()
         row = data[ix]
-        regex = re.findall('([\w\d-]+)-patch.*.(.\w{3})', row[0])[0]
+        patchName = row[0]
+
+        #print("Reading in annotations for: {0}".format(patchName))
+        regex = re.findall('([\w\d-]+)-patch.*.(.\w{3})', patchName)[0]
         imageName = regex[0] + regex[1]
 
         # first iteration
         if (not imageGroup):
             imageGroup = imageName
 
-        patchName = row[0]
-        coords = row[1]
-        sourceImageSize = row[2]
-        confidence = float(row[3])
-        coords = normalizeCoords(image_path, imageName, sourceImageSize, coords)
+        # Make sure that the patch name is a cleaned patch from the list
+        if any(patchName in s for s in cleanedData):
+            coords = row[1]
+            sourceImageSize = row[2]
+            confidence = float(row[3])
+            coords = normalizeCoords(image_path, imageName, sourceImageSize, coords, saveImagePatch, confidence, patchName, outputFolder)
 
-        annotation['patchName'] = patchName
-        annotation['confidence'] = confidence
-        annotation['x'] = coords[0]
-        annotation['y'] = coords[1]
-        annotation['width'] = coords[2] - coords[0]
-        annotation['height'] = coords[3] - coords[1]
-        annotationsList.append(annotation)
+            annotation['patchName'] = patchName
+            annotation['confidence'] = confidence
+            annotation['x'] = coords[0]
+            annotation['y'] = coords[1]
+            annotation['width'] = coords[2] - coords[0]
+            annotation['height'] = coords[3] - coords[1]
+            annotationsList.append(annotation)
 
         if (ix >= (len(data) - 1)):
             jsonObject['filename'] = imageName
@@ -86,7 +97,7 @@ def saveJson(fileName, jsonObject, outputFolder):
         json.dump(jsonObject, outfile)
         print("Annotation file saved to {0}".format(fileName))
 
-def normalizeCoords(image_path, imageName, sourceImageSize, coords):
+def normalizeCoords(image_path, imageName, sourceImageSize, coords, saveImagePatch, confidence, patchName, outputFolder):
     imagePath = os.path.join(image_path, imageName)
     img = Image.open(imagePath)
     destImageWidth, destImageHeight = img.size
@@ -104,6 +115,12 @@ def normalizeCoords(image_path, imageName, sourceImageSize, coords):
     nY1 = coords[1] * percentDiffHeight
     nX2 = coords[2] * percentDiffWidth
     nY2 = coords[3] * percentDiffHeight
+
+    if (saveImagePatch and confidence > 0.98):
+        crop = img.crop((int(nX1), int(nY1), int(nX2), int(nY2)))
+        newFileName = patchName
+        crop.save(os.path.join(outputFolder, 'cropTest', newFileName))
+
     return [nX1, nY1, nX2, nY2]
 
 
@@ -130,4 +147,5 @@ if __name__ == '__main__':
     set = "variety-1000"
     imagePath = "/home/soda/workspace/py-faster-rcnn/data/training_images/bibsmart/{0}/Images".format(set)
     detectionFile = "/home/soda/workspace/py-faster-rcnn/data/training_images/bibsmart/{0}/detection_gpu0_soda-desktopFalse.csv".format(set)
-    create_annotation_from_detection(detectionFile, imagePath, outputFolder, set)
+    cleanedImageFile = "/home/soda/workspace/py-faster-rcnn/data/training_images/bibsmart/{0}/cleaned-images.txt".format(set)
+    create_annotation_from_detection(detectionFile, cleanedImageFile, imagePath, outputFolder, set)
