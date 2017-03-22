@@ -39,25 +39,33 @@ class patch_info:
         self.patch_name = ''
         self.image_data = None
         self.detection_coordinate = []
-        self.label = ''
-        self.recognition_score = []
+        self.ensemble_label_length = {}
+        self.ensemble_label = {}
+        self.ensemble_score = {}
         self.group_key = 0
-        self.best_label = ''
+        self.best_length = 0
+        self.best_length_percent = 0
+        self.best_label = []
+        self.best_label_percent_list = []
         self.best_coordinate = []
-        self.label_ratio = 0
 
-def vis_detections(im, class_name, dets, image_name, output_path, thresh=0.5):
-    """Draw detected bounding boxes."""
-    inds = np.where(dets[:, -1] >= thresh)[0]
-    if len(inds) == 0:
-        return
-
+def vis_detections(im, class_name, patch_info_list, image_name, output_path, detection_confidence, recon_confidence):
     im = im[:, :, (2, 1, 0)]
     fig, ax = plt.subplots(figsize=(12, 12))
     ax.imshow(im, aspect='equal')
-    for i in inds:
-        bbox = dets[i, :4]
-        score = dets[i, -1]
+    groups = {}
+
+    for ix, patch in enumerate(patch_info_list):
+        key = patch.group_key
+        if (key in groups) == False:
+            groups[key] = list()
+            groups[key].append(patch)
+        else:
+            groups[key].append(patch)
+
+    for key in groups:
+        bbox = groups[key][0].best_coordinate
+        score = groups[key][0].best_label_percent_list
 
         ax.add_patch(
             plt.Rectangle((bbox[0], bbox[1]),
@@ -71,14 +79,42 @@ def vis_detections(im, class_name, dets, image_name, output_path, thresh=0.5):
                 fontsize=14, color='white')
 
     ax.set_title(('{} detections with '
-                  'p({} | box) >= {:.1f}').format(class_name, class_name,
-                                                  thresh),
+                  'p({} | box) >= detection {:.1f} and recognition {:.1f}').format(class_name, class_name,
+                                                  detection_confidence, recon_confidence),
                   fontsize=14)
     plt.axis('off')
     plt.tight_layout()
     #plt.draw()
     plt.savefig(os.path.join(output_path, image_name))
     plt.close()
+
+def expand_patch(image_size, coordinate, percent):
+    x1 = coordinate[0]
+    y1 = coordinate[1]
+    x2 = coordinate[2]
+    y2 = coordinate[3]
+
+    width = x2 - x1
+    height = y2 - y1
+
+    width_increase = width * percent
+    height_increase = height * percent
+
+    new_x1 = x1 - (width_increase / 2)
+    new_y1 = y1 - (height_increase / 2)
+    new_x2 = x2 + (width_increase / 2)
+    new_y2 = y2 + (height_increase / 2)
+
+    if (new_x1 < 0):
+        new_x1 = 0
+    if (new_y1 < 0):
+        new_y1 = 0
+    if (new_x2 > image_size[1]):
+        new_x1 = image_size[1]
+    if (new_y1 > image_size[0]):
+        new_y1 = image_size[0]
+
+    return [new_x1, new_y1, new_x2, new_y2]
 
 def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
     indexes = np.where(norm_coordinates[:, -1] >= thresh)[0]
@@ -96,11 +132,17 @@ def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
     for groupKey in coordinate_groups_dict:
         groupIndexes = coordinate_groups_dict[groupKey]
         coordinates = filtered_coordinates[groupIndexes, :]
+        increase_coordinate_percent = 1.2
 
         for ix, coordinate in enumerate(coordinates):
             new_patch = patch_info()
             new_patch.group_key = groupKey
-            new_patch_image = image[coordinate[1]:coordinate[3], coordinate[0]:coordinate[2]]
+            coordinate = expand_patch(image.shape, coordinate, increase_coordinate_percent)
+            x1 = coordinate[0]
+            y1 = coordinate[1]
+            x2 = coordinate[2]
+            y2 = coordinate[3]
+            new_patch_image = image[y1:y2, x1:x2]
             new_patch_image = resize_img(new_patch_image, patch_size[1], patch_size[0])
             new_patch.patch_name = image_name_no_ext + "-patch-" + str(groupKey) + "-" + str(ix)
             new_patch.image_data = new_patch_image
@@ -296,107 +338,204 @@ def non_max_suppression(coordBoxes, overlapThresh):
         indexes = np.delete(indexes, suppress)
     return indexDict
 
-def FindLabelFromGroup(patch_info_group, confidenceThreshold):
-    bestLabel = -1
-    bestAverageScore = 0
-    bestCurrentArea = 0
-    bestX1 = -1
-    bestY1 = -1
-    bestX2 = -1
-    bestY2 = -1
-    bestLengthScore = -1
-    sameLabelDict = {}
-    sameLabelDict[bestLabel] = 1
-    newSortedList = list()
-    labelRatio = -1
+class label_stat:
+    def __init__(self):
+        self.count = 0
+        self.percent_of_total = 0
+        self.total_label_count = 0
 
+def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
+    MAX_LABELS_LENGTH = 5
+    lengths_dict = {}
+    labels_dict = {'pos0': {}, 'pos1': {}, 'pos2': {},'pos3': {}, 'pos4': {}}
+    total_stat_count = 0
+
+    ensemble_length = len(patch_info_group[0].ensemble_label)
     for ix, patch in enumerate(patch_info_group):
-        imageLabel = patch.label
+        for ensemble_index in xrange(ensemble_length):
 
-        if (imageLabel in sameLabelDict):
-            sameLabelDict[imageLabel] = sameLabelDict[imageLabel] + 1
-        else:
-            sameLabelDict[imageLabel] = 1
+            total_stat_count = total_stat_count + 1
 
-    # print("SameLabelDict: {0}".format(sameLabelDict))
-    newSortedList = natsorted(patch_info_group, key=attrgetter('label'))
-    # print("Dictionary: {0}".format(sameLabelDict))
-    for ix, patch in enumerate(newSortedList):
-        imageLabel = patch.label
-        sumScores = 0
-        goodResult = True
-        for x in xrange(len(imageLabel) + 1):
-            score = float(patch.recognition_score[x])
-            if (score >= confidenceThreshold):
-                sumScores = sumScores + score
-            else:
-                goodResult = False
-                break  # break out of the current for loop
+            # Length Dictionary
+            length_score = patch.ensemble_score[ensemble_index][0]
+            if (length_score > confidence_threshold):
+                length = patch.ensemble_label_length[ensemble_index]
+                if (length in lengths_dict) == False:
+                    new_label_stat = label_stat()
+                    new_label_stat.count = 1
+                    lengths_dict[length] = new_label_stat
+                else:
+                    lengths_dict[length].count = lengths_dict[length].count + 1
 
-        if (goodResult == True):
-            averageScore = float(sumScores / len(imageLabel))
+            # Labels Dictionary
 
-            x1 = patch.detection_coordinate[1]
-            y1 = patch.detection_coordinate[2]
-            x2 = patch.detection_coordinate[3]
-            y2 = patch.detection_coordinate[4]
-            lengthScore = float(patch.detection_coordinate[0])
-            currentArea = (x2 - x1 + 1) * (y2 - y1 + 1)
-            sameLabelRatio = float(sameLabelDict[imageLabel]) / float(sameLabelDict[bestLabel])
+            # We really only want to look at the labels based on label length or else we'll
+            # get numbers that will skew the total accuracy
+            current_label_length = patch.ensemble_label_length[ensemble_index]
+            for x in xrange(current_label_length):
+                posIdx = 'pos' + str(x)
+                label_score = patch.ensemble_score[ensemble_index][x + 1]
+                if (label_score > confidence_threshold):
+                    label = patch.ensemble_label[ensemble_index]
+                    label_at_pos = label[x]
+                    if (label_at_pos in labels_dict[posIdx]) == False:
+                        new_label_stat = label_stat()
+                        new_label_stat.count = 1
+                        labels_dict[posIdx][label_at_pos] = new_label_stat
+                    else:
+                        labels_dict[posIdx][label_at_pos].count = labels_dict[posIdx][label_at_pos].count + 1
 
-            sameButHighScore = (imageLabel == bestLabel or bestLabel < 0) and averageScore > bestAverageScore
-            sameLengthHigherScore = len(str(imageLabel)) == len(str(bestLabel)) and averageScore > bestAverageScore  # and currentArea <= bestCurrentArea
-            greaterLengthScore = lengthScore > bestLengthScore and (str(imageLabel) not in str(bestLabel)) and (sameLabelRatio >= 1) and currentArea <= bestCurrentArea
-            greaterLengthScoreAndLength = lengthScore > bestLengthScore and len(str(imageLabel)) > len(str(bestLabel))
-            bestInsideCurrent = str(bestLabel) in str(imageLabel) and len(str(bestLabel)) < len(str(imageLabel)) and ((str(imageLabel).find(str(bestLabel)) == 0 and bestX2 < x2) or (str(imageLabel).find(str(bestLabel)) > 0 and bestX1 > x1))
-            moreInstancesofCurrent = sameLabelRatio >= 2 and (str(imageLabel) not in str(bestLabel))
-            greaterLengthAndPreviousLabelAtIndex0 = str(imageLabel).find(str(bestLabel)) == 0 and len(str(bestLabel)) < len(str(imageLabel)) and sameLabelRatio >= 2
+    # Build the final scores for length and label
+    final_lengths_score = {}
+    final_labels_score = {'pos0': {}, 'pos1': {}, 'pos2': {},'pos3': {}, 'pos4': {}}
 
-            #resultTextList.append("Patch: {0},Label: {1},bestLabel: {2},lengthScore: {3},bestLengthScore: {4},area: {5},bestArea: {6},avgScore: {7},bestAvgScore: {8},sameLabelRatio: {9},sbhs: {10},slhs: {11},gls: {12},glsl: {13},mioc: {14},bic:{15},glli: {16}".format(imageFile, imageLabel, bestLabel, lengthScore, bestLengthScore, currentArea, bestCurrentArea, averageScore, bestAverageScore, sameLabelRatio, sameButHighScore, sameLengthHigherScore, greaterLengthScore, greaterLengthScoreAndLength, moreInstancesofCurrent, bestInsideCurrent, greaterLengthAndPreviousLabelAtIndex0))
-            if ((sameButHighScore)
-                or (sameLengthHigherScore)
-                or (greaterLengthScore)
-                or (greaterLengthScoreAndLength)
-                # or moreInstancesofCurrent
-                or (bestInsideCurrent)
-                or (greaterLengthAndPreviousLabelAtIndex0)):
+    for key in lengths_dict:
+        lengths_dict[key].total_label_count = total_stat_count
+        occurence_count = lengths_dict[key].count
+        percentOfTotal = float(occurence_count) / total_stat_count
+        lengths_dict[key].percent_of_total = percentOfTotal
 
+        final_lengths_score[key] = percentOfTotal
 
-                bestCurrentArea = currentArea
-                bestAverageScore = averageScore
-                bestLengthScore = lengthScore
-                bestX1 = x1
-                bestY1 = y1
-                bestX2 = x2
-                bestY2 = y2
-                bestLabel = imageLabel
-                labelRatio = float(sameLabelDict[bestLabel]) / float(len(patch_info_group))
+    for x in xrange(MAX_LABELS_LENGTH):
+        posIdx = 'pos' + str(x)
+        for key in labels_dict[posIdx]:
+            labels_dict[posIdx][key].total_label_count = total_stat_count
+            occurence_count = labels_dict[posIdx][key].count
+            percentOfTotal = float(occurence_count) / total_stat_count
+            labels_dict[posIdx][key].percent_of_total = percentOfTotal
 
-    return bestLabel, [bestX1, bestY1, bestX2, bestY2], labelRatio
+            final_labels_score[posIdx][key] = percentOfTotal
 
-def find_best_label(patch_info_list, recognition_confidence_threshold):
-    key = -1
+    bestLength = -1
+    bestLengthPercent = 0.0 # minimum percentage
+    if (len(final_lengths_score) > 0):
+        for key in final_lengths_score:
+            if (final_lengths_score[key] > bestLengthPercent):
+                bestLengthPercent = final_lengths_score[key]
+                bestLength = key
+
+    bestLabel = [-1, -1, -1, -1, -1]
+    bestLabelPercentList = [0, 0, 0, 0, 0]
+    if (bestLength > 0):
+        for x in xrange(bestLength):
+            posIdx = 'pos' + str(x)
+            bestLabelPercent = 0.0 # minimum percentage
+            if (len(final_labels_score[posIdx]) > 0):
+                for key in final_labels_score[posIdx]:
+                    if (final_labels_score[posIdx][key] > bestLabelPercent):
+                        bestLabelPercent = final_labels_score[posIdx][key]
+                        bestLabelPercentList[x] = bestLabelPercent
+                        bestLabel[x] = key
+
+    if (bestLength > 0):
+        print ("Label: {0}  Percent of total at each position greater than confidence of {1}: [{2}, {3}]"
+               .format("".join(str(x) for x in bestLabel[:bestLength]), confidence_threshold, str(bestLengthPercent), ", ".join(str(x) for x in bestLabelPercentList)))
+    bestCoordinate = patch_info_group[0].detection_coordinate
+    return bestLength, bestLengthPercent, bestLabel, bestLabelPercentList, bestCoordinate
+
+# def FindLabelFromGroup(patch_info_group, confidenceThreshold):
+#     bestLabel = -1
+#     bestAverageScore = 0
+#     bestCurrentArea = 0
+#     bestX1 = -1
+#     bestY1 = -1
+#     bestX2 = -1
+#     bestY2 = -1
+#     bestLengthScore = -1
+#     sameLabelDict = {}
+#     sameLabelDict[bestLabel] = 1
+#     newSortedList = list()
+#     labelRatio = -1
+#
+#     for ix, patch in enumerate(patch_info_group):
+#         imageLabel = patch.ensemble_label[ensemble_index]
+#
+#         if (imageLabel in sameLabelDict):
+#             sameLabelDict[imageLabel] = sameLabelDict[imageLabel] + 1
+#         else:
+#             sameLabelDict[imageLabel] = 1
+#
+#     # print("SameLabelDict: {0}".format(sameLabelDict))
+#     newSortedList = natsorted(patch_info_group, key=attrgetter('label'))
+#     # print("Dictionary: {0}".format(sameLabelDict))
+#     for ix, patch in enumerate(newSortedList):
+#         imageLabel = patch.ensemble_label[ensemble_index]
+#         sumScores = 0
+#         goodResult = True
+#         for x in xrange(len(imageLabel) + 1):
+#             score = float(patch.ensemble_score[ensemble_index][x])
+#             if (score >= confidenceThreshold):
+#                 sumScores = sumScores + score
+#             else:
+#                 goodResult = False
+#                 break  # break out of the current for loop
+#
+#         if (goodResult == True):
+#             averageScore = float(sumScores / len(imageLabel))
+#
+#             x1 = patch.detection_coordinate[1]
+#             y1 = patch.detection_coordinate[2]
+#             x2 = patch.detection_coordinate[3]
+#             y2 = patch.detection_coordinate[4]
+#             lengthScore = float(patch.detection_coordinate[0])
+#             currentArea = (x2 - x1 + 1) * (y2 - y1 + 1)
+#             sameLabelRatio = float(sameLabelDict[imageLabel]) / float(sameLabelDict[bestLabel])
+#
+#             sameButHighScore = (imageLabel == bestLabel or bestLabel < 0) and averageScore > bestAverageScore
+#             sameLengthHigherScore = len(str(imageLabel)) == len(str(bestLabel)) and averageScore > bestAverageScore  # and currentArea <= bestCurrentArea
+#             greaterLengthScore = lengthScore > bestLengthScore and (str(imageLabel) not in str(bestLabel)) and (sameLabelRatio >= 1) and currentArea <= bestCurrentArea
+#             greaterLengthScoreAndLength = lengthScore > bestLengthScore and len(str(imageLabel)) > len(str(bestLabel))
+#             bestInsideCurrent = str(bestLabel) in str(imageLabel) and len(str(bestLabel)) < len(str(imageLabel)) and ((str(imageLabel).find(str(bestLabel)) == 0 and bestX2 < x2) or (str(imageLabel).find(str(bestLabel)) > 0 and bestX1 > x1))
+#             moreInstancesofCurrent = sameLabelRatio >= 2 and (str(imageLabel) not in str(bestLabel))
+#             greaterLengthAndPreviousLabelAtIndex0 = str(imageLabel).find(str(bestLabel)) == 0 and len(str(bestLabel)) < len(str(imageLabel)) and sameLabelRatio >= 2
+#
+#             #resultTextList.append("Patch: {0},Label: {1},bestLabel: {2},lengthScore: {3},bestLengthScore: {4},area: {5},bestArea: {6},avgScore: {7},bestAvgScore: {8},sameLabelRatio: {9},sbhs: {10},slhs: {11},gls: {12},glsl: {13},mioc: {14},bic:{15},glli: {16}".format(imageFile, imageLabel, bestLabel, lengthScore, bestLengthScore, currentArea, bestCurrentArea, averageScore, bestAverageScore, sameLabelRatio, sameButHighScore, sameLengthHigherScore, greaterLengthScore, greaterLengthScoreAndLength, moreInstancesofCurrent, bestInsideCurrent, greaterLengthAndPreviousLabelAtIndex0))
+#             if ((sameButHighScore)
+#                 or (sameLengthHigherScore)
+#                 or (greaterLengthScore)
+#                 or (greaterLengthScoreAndLength)
+#                 # or moreInstancesofCurrent
+#                 or (bestInsideCurrent)
+#                 or (greaterLengthAndPreviousLabelAtIndex0)):
+#
+#
+#                 bestCurrentArea = currentArea
+#                 bestAverageScore = averageScore
+#                 bestLengthScore = lengthScore
+#                 bestX1 = x1
+#                 bestY1 = y1
+#                 bestX2 = x2
+#                 bestY2 = y2
+#                 bestLabel = imageLabel
+#                 labelRatio = float(sameLabelDict[bestLabel]) / float(len(patch_info_group))
+#
+#     return bestLabel, [bestX1, bestY1, bestX2, bestY2], labelRatio
+
+def find_best_label(ensemble_index, patch_info_list, recognition_confidence_threshold):
     groups = {}
 
     for ix, patch in enumerate(patch_info_list):
-        if key == -1:
-            key = patch.group_key
 
-        if key in groups == False:
+        key = patch.group_key
+
+        if (key in groups) == False:
             groups[key] = list()
             groups[key].append(patch)
         else:
             groups[key].append(patch)
 
     for key in groups:
-        label, best_coordinate, label_ratio = FindLabelFromGroup(groups[key], recognition_confidence_threshold)
+        best_length, best_length_percent, best_label, best_label_percent_list, best_coordinate = find_best_label_from_ensemble_group(groups[key], recognition_confidence_threshold)
 
         for ix, patch in enumerate(groups[key]):
-            patch.best_label = label
+            patch.best_length = best_length
+            patch.best_length_percent = best_length_percent
+            patch.best_label = best_label
+            patch.best_label_percent_list = best_label_percent_list
             patch.best_coordinate = best_coordinate
-            patch.label_ratio = label_ratio
 
-def do_recognition(net, image_array, patch_info_list, batch_size, patch_size):
+def do_recognition(ensemble_index, net, image_array, patch_info_list, batch_size, patch_size):
     dataSize = image_array.shape[0]
     patch_height = patch_size[0]
     patch_width = patch_size[1]
@@ -406,7 +545,7 @@ def do_recognition(net, image_array, patch_info_list, batch_size, patch_size):
         if (stop > dataSize):
             stop = dataSize
 
-        print('Loading patches {0} to {1}'.format(i, stop))
+        print('Loading patches for ensemble {0}: {1} to {2}'.format(ensemble_index, i, stop))
         data4D = image_array[i:stop]
         rows = data4D.shape[0]
         extraRows = np.zeros([batch_size, 1, patch_height, patch_width])
@@ -435,7 +574,7 @@ def do_recognition(net, image_array, patch_info_list, batch_size, patch_size):
 
             strLength = index1 + 1
             strLabel = str(index2) + str(index3) + str(index4) + str(index5) + str(index6)
-            strLabel = strLabel[0:strLength]
+            #strLabel = strLabel[0:strLength] # Want to see the entire string, not partial for later
             scores = list()
             scores.append(score1)
             scores.append(score2)
@@ -444,8 +583,9 @@ def do_recognition(net, image_array, patch_info_list, batch_size, patch_size):
             scores.append(score5)
             scores.append(score6)
 
-            patch_info_list[i+x].label = strLabel
-            patch_info_list[i+x].recognition_score = scores
+            patch_info_list[i+x].ensemble_label_length[ensemble_index] = strLength
+            patch_info_list[i+x].ensemble_label[ensemble_index] = strLabel
+            patch_info_list[i+x].ensemble_score[ensemble_index] = scores
 
     return patch_info_list
 
@@ -471,7 +611,7 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
     im = cv2.imread(im_file, cv2.IMREAD_GRAYSCALE)
     CONF_THRESH = 0.1
     RECON_CONF_THRESH = 0.98
-    NMS_THRESH = 1.1
+    NMS_THRESH = 1.0
     PATCH_SIZE = [40, 60]
     for cls_ind, cls in enumerate(CLASSES[1:]):
         cls_ind += 1 # because we skipped background
@@ -500,20 +640,17 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
 
         # Perform recognition on boxes
         batch_size = 50
-        do_recognition(recognition_net_list[0], normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
-        do_recognition(recognition_net_list[1], normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
-        do_recognition(recognition_net_list[2], normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
-        do_recognition(recognition_net_list[3], normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
-        do_recognition(recognition_net_list[4], normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
+        for ix, net in enumerate(recognition_net_list):
+            do_recognition(ix, net, normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
 
         # Find best labels for each patch group
-        find_best_label(patches_info_list, RECON_CONF_THRESH)
+        find_best_label(ix, patches_info_list, RECON_CONF_THRESH)
 
         timer.toc()
         print ('Recognition took {:.3f}s for '
            '{:d} object proposals').format(timer.total_time, boxes.shape[0])
         print('Recognition complete for image: {0}'.format(image_name))
-        #vis_detections(im, cls, dets, image_name, output_path, thresh=CONF_THRESH)
+        vis_detections(im, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
 
 def parse_args():
     """Parse input arguments."""
@@ -576,7 +713,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_100"
+    test_set = "variety_test"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
