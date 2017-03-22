@@ -267,7 +267,7 @@ layer {
   name: "cls_score_bibsmart"
   type: "InnerProduct"
   bottom: "fc7"
-  top: "cls_score_inria"
+  top: "cls_score_bibsmart"
   inner_product_param {
     num_output: 2
   }
@@ -276,7 +276,7 @@ layer {
   name: "bbox_pred_bibsmart"
   type: "InnerProduct"
   bottom: "fc7"
-  top: "bbox_pred_inria"
+  top: "bbox_pred_bibsmart"
   inner_product_param {
     num_output: 8
   }
@@ -284,6 +284,6 @@ layer {
 layer {
   name: "cls_prob"
   type: "Softmax"
-  bottom: "cls_score_inria"
+  bottom: "cls_score_bibsmart"
   top: "cls_prob"
 }
