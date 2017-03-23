@@ -401,7 +401,7 @@ def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
 
     best_label = '-1'
     best_label_percent = 0
-    best_label_percent_min = 0.0 # minimum percentage
+    best_label_percent_min = 0.01 # minimum percentage
     if (len(final_labels_score) > 0):
         for key in final_labels_score:
             if (final_labels_score[key] > best_label_percent_min):
@@ -702,7 +702,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_test"
+    test_set = "159-hard-test3"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
