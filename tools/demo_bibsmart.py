@@ -65,7 +65,13 @@ def vis_detections(im, class_name, patch_info_list, image_name, output_path, det
 
     for key in groups:
         bbox = groups[key][0].best_coordinate
-        score = groups[key][0].best_label_percent_list
+        length = groups[key][0].best_length
+        length_percent = groups[key][0].best_length_percent
+        label = ''.join(str(x) for x in groups[key][0].best_label[:length])
+        score = '[' + str(round(length_percent,2)) + '-' + '-'.join(str(round(x,2)) for x in groups[key][0].best_label_percent_list[:length]) + ']'
+
+        if ('-1' in label):
+            continue
 
         ax.add_patch(
             plt.Rectangle((bbox[0], bbox[1]),
@@ -74,7 +80,7 @@ def vis_detections(im, class_name, patch_info_list, image_name, output_path, det
                           edgecolor='red', linewidth=3.5)
             )
         ax.text(bbox[0], bbox[1] - 2,
-                '{:s} {:.3f}'.format(class_name, score),
+                '{0}'.format(label),
                 bbox=dict(facecolor='blue', alpha=0.5),
                 fontsize=14, color='white')
 
@@ -97,8 +103,8 @@ def expand_patch(image_size, coordinate, percent):
     width = x2 - x1
     height = y2 - y1
 
-    width_increase = width * percent
-    height_increase = height * percent
+    width_increase = (width * percent) - width
+    height_increase = (height * percent) - height
 
     new_x1 = x1 - (width_increase / 2)
     new_y1 = y1 - (height_increase / 2)
@@ -110,9 +116,9 @@ def expand_patch(image_size, coordinate, percent):
     if (new_y1 < 0):
         new_y1 = 0
     if (new_x2 > image_size[1]):
-        new_x1 = image_size[1]
-    if (new_y1 > image_size[0]):
-        new_y1 = image_size[0]
+        new_x2 = image_size[1]
+    if (new_y2 > image_size[0]):
+        new_y2 = image_size[0]
 
     return [new_x1, new_y1, new_x2, new_y2]
 
@@ -124,7 +130,7 @@ def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
     filtered_coordinates = norm_coordinates[indexes, :]
 
     # Get NMS groups
-    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.40)
+    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.20)
 
     image_name_no_ext = re.findall('([^\\/]*)\.\w+$', image_name)[0]
     patch_info_list = list()
@@ -407,32 +413,32 @@ def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
 
             final_labels_score[posIdx][key] = percentOfTotal
 
-    bestLength = -1
-    bestLengthPercent = 0.0 # minimum percentage
+    best_length = -1
+    best_length_percent = 0.1 # minimum percentage
     if (len(final_lengths_score) > 0):
         for key in final_lengths_score:
-            if (final_lengths_score[key] > bestLengthPercent):
-                bestLengthPercent = final_lengths_score[key]
-                bestLength = key
+            if (final_lengths_score[key] > best_length_percent):
+                best_length_percent = final_lengths_score[key]
+                best_length = key
 
-    bestLabel = [-1, -1, -1, -1, -1]
-    bestLabelPercentList = [0, 0, 0, 0, 0]
-    if (bestLength > 0):
-        for x in xrange(bestLength):
+    best_label = [-1, -1, -1, -1, -1]
+    best_label_percent_list = [0, 0, 0, 0, 0]
+    if (best_length > 0):
+        for x in xrange(best_length):
             posIdx = 'pos' + str(x)
-            bestLabelPercent = 0.0 # minimum percentage
+            best_label_percent = 0.1 # minimum percentage
             if (len(final_labels_score[posIdx]) > 0):
                 for key in final_labels_score[posIdx]:
-                    if (final_labels_score[posIdx][key] > bestLabelPercent):
-                        bestLabelPercent = final_labels_score[posIdx][key]
-                        bestLabelPercentList[x] = bestLabelPercent
-                        bestLabel[x] = key
+                    if (final_labels_score[posIdx][key] > best_label_percent):
+                        best_label_percent = final_labels_score[posIdx][key]
+                        best_label_percent_list[x] = best_label_percent
+                        best_label[x] = key
 
-    if (bestLength > 0):
+    if (best_length > 0):
         print ("Label: {0}  Percent of total at each position greater than confidence of {1}: [{2}, {3}]"
-               .format("".join(str(x) for x in bestLabel[:bestLength]), confidence_threshold, str(bestLengthPercent), ", ".join(str(x) for x in bestLabelPercentList)))
-    bestCoordinate = patch_info_group[0].detection_coordinate
-    return bestLength, bestLengthPercent, bestLabel, bestLabelPercentList, bestCoordinate
+               .format("".join(str(x) for x in best_label[:best_length]), confidence_threshold, str(best_length_percent), ", ".join(str(x) for x in best_label_percent_list)))
+    best_coordinate = patch_info_group[0].detection_coordinate
+    return best_length, best_length_percent, best_label, best_label_percent_list, best_coordinate
 
 # def FindLabelFromGroup(patch_info_group, confidenceThreshold):
 #     bestLabel = -1
@@ -594,12 +600,12 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
 
     # Load the demo image
     im_file = os.path.join(cfg.DATA_DIR, 'demo', im_folder, image_name)
-    im = cv2.imread(im_file)
+    im_rgb = cv2.imread(im_file)
 
     # Detect all object classes and regress object bounds
     timer = Timer()
     timer.tic()
-    scores, boxes = im_detect(net, im)
+    scores, boxes = im_detect(net, im_rgb)
     timer.toc()
     print ('Detection took {:.3f}s for '
            '{:d} object proposals').format(timer.total_time, boxes.shape[0])
@@ -650,7 +656,7 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
         print ('Recognition took {:.3f}s for '
            '{:d} object proposals').format(timer.total_time, boxes.shape[0])
         print('Recognition complete for image: {0}'.format(image_name))
-        vis_detections(im, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
+        vis_detections(im_rgb, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
 
 def parse_args():
     """Parse input arguments."""
@@ -713,7 +719,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_test"
+    test_set = "variety_100"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
