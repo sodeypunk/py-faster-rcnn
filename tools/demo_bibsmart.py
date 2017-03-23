@@ -26,7 +26,7 @@ import numpy as np
 import scipy.io as sio
 import caffe, os, sys, cv2, gc
 import argparse
-import re
+import re, csv
 
 CLASSES = ('__background__',
            'bib')
@@ -43,11 +43,10 @@ class patch_info:
         self.ensemble_label = {}
         self.ensemble_score = {}
         self.group_key = 0
-        self.best_length = 0
-        self.best_length_percent = 0
-        self.best_label = []
-        self.best_label_percent_list = []
+        self.best_label = '-1'
+        self.best_label_percent = 0
         self.best_coordinate = []
+        self.final_labels_score = []
 
 def vis_detections(im, class_name, patch_info_list, image_name, output_path, detection_confidence, recon_confidence):
     im = im[:, :, (2, 1, 0)]
@@ -65,10 +64,8 @@ def vis_detections(im, class_name, patch_info_list, image_name, output_path, det
 
     for key in groups:
         bbox = groups[key][0].best_coordinate
-        length = groups[key][0].best_length
-        length_percent = groups[key][0].best_length_percent
-        label = ''.join(str(x) for x in groups[key][0].best_label[:length])
-        score = '[' + str(round(length_percent,2)) + '-' + '-'.join(str(round(x,2)) for x in groups[key][0].best_label_percent_list[:length]) + ']'
+        label = groups[key][0].best_label
+        score = groups[key][0].best_label_percent
 
         if ('-1' in label):
             continue
@@ -80,12 +77,12 @@ def vis_detections(im, class_name, patch_info_list, image_name, output_path, det
                           edgecolor='red', linewidth=3.5)
             )
         ax.text(bbox[0], bbox[1] - 2,
-                '{0}'.format(label),
+                '{0} - {1}'.format(label, round(score,2)),
                 bbox=dict(facecolor='blue', alpha=0.5),
                 fontsize=14, color='white')
 
-    ax.set_title(('{} detections with '
-                  'p({} | box) >= detection {:.1f} and recognition {:.1f}').format(class_name, class_name,
+    ax.set_title(('{0} detections with '
+                  'p({0} | box) >= detection {1} and recognition {2}').format(class_name,
                                                   detection_confidence, recon_confidence),
                   fontsize=14)
     plt.axis('off')
@@ -123,14 +120,19 @@ def expand_patch(image_size, coordinate, percent):
     return [new_x1, new_y1, new_x2, new_y2]
 
 def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
+    increase_coordinate_percent = 1.2
     indexes = np.where(norm_coordinates[:, -1] >= thresh)[0]
     if len(indexes) == 0:
         return
 
     filtered_coordinates = norm_coordinates[indexes, :]
 
+    # Expand all coordinates by 20%
+    for ix, coordinate in enumerate(filtered_coordinates):
+        filtered_coordinates[ix][:4] = expand_patch(image.shape, coordinate, increase_coordinate_percent)
+
     # Get NMS groups
-    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.20)
+    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.40)
 
     image_name_no_ext = re.findall('([^\\/]*)\.\w+$', image_name)[0]
     patch_info_list = list()
@@ -138,12 +140,10 @@ def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
     for groupKey in coordinate_groups_dict:
         groupIndexes = coordinate_groups_dict[groupKey]
         coordinates = filtered_coordinates[groupIndexes, :]
-        increase_coordinate_percent = 1.2
 
         for ix, coordinate in enumerate(coordinates):
             new_patch = patch_info()
             new_patch.group_key = groupKey
-            coordinate = expand_patch(image.shape, coordinate, increase_coordinate_percent)
             x1 = coordinate[0]
             y1 = coordinate[1]
             x2 = coordinate[2]
@@ -351,9 +351,8 @@ class label_stat:
         self.total_label_count = 0
 
 def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
-    MAX_LABELS_LENGTH = 5
-    lengths_dict = {}
-    labels_dict = {'pos0': {}, 'pos1': {}, 'pos2': {},'pos3': {}, 'pos4': {}}
+    labels_dict = {}
+    best_coordinate = []
     total_stat_count = 0
 
     ensemble_length = len(patch_info_group[0].ensemble_label)
@@ -362,83 +361,58 @@ def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
 
             total_stat_count = total_stat_count + 1
 
-            # Length Dictionary
+            # Find all lengths and labels above confidence
             length_score = patch.ensemble_score[ensemble_index][0]
             if (length_score > confidence_threshold):
-                length = patch.ensemble_label_length[ensemble_index]
-                if (length in lengths_dict) == False:
-                    new_label_stat = label_stat()
-                    new_label_stat.count = 1
-                    lengths_dict[length] = new_label_stat
-                else:
-                    lengths_dict[length].count = lengths_dict[length].count + 1
+                # If length score is correct, make sure all labels for that length are also over threshold
+                label_length = patch.ensemble_label_length[ensemble_index]
 
-            # Labels Dictionary
+                label = ''
+                for x in xrange(label_length):
+                    label_score = patch.ensemble_score[ensemble_index][x + 1]
+                    if (label_score > confidence_threshold):
+                        ensemble_label = patch.ensemble_label[ensemble_index]
+                        label_at_pos = ensemble_label[x]
+                        label = label + str(label_at_pos)
+                    else:
+                        label = '-1'
+                        break;
 
-            # We really only want to look at the labels based on label length or else we'll
-            # get numbers that will skew the total accuracy
-            current_label_length = patch.ensemble_label_length[ensemble_index]
-            for x in xrange(current_label_length):
-                posIdx = 'pos' + str(x)
-                label_score = patch.ensemble_score[ensemble_index][x + 1]
-                if (label_score > confidence_threshold):
-                    label = patch.ensemble_label[ensemble_index]
-                    label_at_pos = label[x]
-                    if (label_at_pos in labels_dict[posIdx]) == False:
+                if (label != '-1'):
+                    if (label in labels_dict) == False:
                         new_label_stat = label_stat()
                         new_label_stat.count = 1
-                        labels_dict[posIdx][label_at_pos] = new_label_stat
+                        labels_dict[label] = new_label_stat
                     else:
-                        labels_dict[posIdx][label_at_pos].count = labels_dict[posIdx][label_at_pos].count + 1
+                        labels_dict[label].count = labels_dict[label].count + 1
+
+                    best_coordinate = patch.detection_coordinate
 
     # Build the final scores for length and label
-    final_lengths_score = {}
-    final_labels_score = {'pos0': {}, 'pos1': {}, 'pos2': {},'pos3': {}, 'pos4': {}}
+    final_labels_score = {}
 
-    for key in lengths_dict:
-        lengths_dict[key].total_label_count = total_stat_count
-        occurence_count = lengths_dict[key].count
+    for key in labels_dict:
+        labels_dict[key].total_label_count = total_stat_count
+        occurence_count = labels_dict[key].count
         percentOfTotal = float(occurence_count) / total_stat_count
-        lengths_dict[key].percent_of_total = percentOfTotal
+        labels_dict[key].percent_of_total = percentOfTotal
 
-        final_lengths_score[key] = percentOfTotal
+        final_labels_score[key] = percentOfTotal
 
-    for x in xrange(MAX_LABELS_LENGTH):
-        posIdx = 'pos' + str(x)
-        for key in labels_dict[posIdx]:
-            labels_dict[posIdx][key].total_label_count = total_stat_count
-            occurence_count = labels_dict[posIdx][key].count
-            percentOfTotal = float(occurence_count) / total_stat_count
-            labels_dict[posIdx][key].percent_of_total = percentOfTotal
+    best_label = '-1'
+    best_label_percent = 0
+    best_label_percent_min = 0.0 # minimum percentage
+    if (len(final_labels_score) > 0):
+        for key in final_labels_score:
+            if (final_labels_score[key] > best_label_percent_min):
+                best_label_percent_min = final_labels_score[key]
+                best_label_percent = best_label_percent_min
+                best_label = key
 
-            final_labels_score[posIdx][key] = percentOfTotal
-
-    best_length = -1
-    best_length_percent = 0.1 # minimum percentage
-    if (len(final_lengths_score) > 0):
-        for key in final_lengths_score:
-            if (final_lengths_score[key] > best_length_percent):
-                best_length_percent = final_lengths_score[key]
-                best_length = key
-
-    best_label = [-1, -1, -1, -1, -1]
-    best_label_percent_list = [0, 0, 0, 0, 0]
-    if (best_length > 0):
-        for x in xrange(best_length):
-            posIdx = 'pos' + str(x)
-            best_label_percent = 0.1 # minimum percentage
-            if (len(final_labels_score[posIdx]) > 0):
-                for key in final_labels_score[posIdx]:
-                    if (final_labels_score[posIdx][key] > best_label_percent):
-                        best_label_percent = final_labels_score[posIdx][key]
-                        best_label_percent_list[x] = best_label_percent
-                        best_label[x] = key
-
-    if (best_length > 0):
-        print ("Label: {0}  Percent of total at each position greater than confidence of {1}: [{2}, {3}]"
-               .format("".join(str(x) for x in best_label[:best_length]), confidence_threshold, str(best_length_percent), ", ".join(str(x) for x in best_label_percent_list)))
-    best_coordinate = patch_info_group[0].detection_coordinate
-    return best_length, best_length_percent, best_label, best_label_percent_list, best_coordinate
+    if (best_label != '-1'):
+        print ("Label: {0}  Percent of total at each position greater than confidence of {1}: [{2}]"
+               .format(best_label, confidence_threshold, str(best_label_percent)))
+    return best_label, best_label_percent, best_coordinate, final_labels_score
 
 # def FindLabelFromGroup(patch_info_group, confidenceThreshold):
 #     bestLabel = -1
@@ -532,14 +506,13 @@ def find_best_label(ensemble_index, patch_info_list, recognition_confidence_thre
             groups[key].append(patch)
 
     for key in groups:
-        best_length, best_length_percent, best_label, best_label_percent_list, best_coordinate = find_best_label_from_ensemble_group(groups[key], recognition_confidence_threshold)
+        best_label, best_label_percent, best_coordinate, final_labels_score = find_best_label_from_ensemble_group(groups[key], recognition_confidence_threshold)
 
         for ix, patch in enumerate(groups[key]):
-            patch.best_length = best_length
-            patch.best_length_percent = best_length_percent
             patch.best_label = best_label
-            patch.best_label_percent_list = best_label_percent_list
+            patch.best_label_percent = best_label_percent
             patch.best_coordinate = best_coordinate
+            patch.final_labels_score = final_labels_score
 
 def do_recognition(ensemble_index, net, image_array, patch_info_list, batch_size, patch_size):
     dataSize = image_array.shape[0]
@@ -594,6 +567,13 @@ def do_recognition(ensemble_index, net, image_array, patch_info_list, batch_size
             patch_info_list[i+x].ensemble_score[ensemble_index] = scores
 
     return patch_info_list
+
+def CreateCSVFile(csvData, csvFileName):
+    print("Creating csv file...".format(csvFileName))
+    with open(csvFileName, 'wb') as csvFile:
+        writer = csv.writer(csvFile, delimiter=',')
+        for x in xrange(len(csvData)):
+            writer.writerow(csvData[x])
 
 def demo(net, recognition_net_list, image_name, im_folder, output_path):
     """Detect object classes in an image using pre-computed object proposals."""
@@ -656,7 +636,10 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
         print ('Recognition took {:.3f}s for '
            '{:d} object proposals').format(timer.total_time, boxes.shape[0])
         print('Recognition complete for image: {0}'.format(image_name))
+
         vis_detections(im_rgb, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
+
+    return patches_info_list
 
 def parse_args():
     """Parse input arguments."""
@@ -719,17 +702,39 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_100"
+    test_set = "variety_test"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
     if os.path.exists(output_path) == False:
         os.makedirs(output_path)
 
-    im_names = os.listdir(path)
+    results_detailed_file_name = os.path.join(output_path, 'resultsDetailed.csv')
+    result_list = list()
+    im_names = sorted(os.listdir(path))
     for im_name in im_names:
         print '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'
         print 'Demo for data/demo/{}'.format(im_name)
-        demo(net, recognition_net_list, im_name, test_set, output_path)
+
+        # Run detection and recognition
+        patches_info_list = demo(net, recognition_net_list, im_name, test_set, output_path)
+
+        # Write out results to CSV file
+        max_ensemble_size = len(recognition_net_list)
+        for ix, patch in enumerate(patches_info_list):
+            row_list = list()
+            row_list.append(patch.patch_name)
+            row_list.append(patch.best_label)
+            row_list.append(patch.best_label_percent)
+            row_list.append(patch.final_labels_score)
+            ensemble_label_list = list()
+            for x in xrange(max_ensemble_size):
+                length = patch.ensemble_label_length[x]
+                ensemble_label_list.append(patch.ensemble_label[x][:length])
+            row_list.append(ensemble_label_list)
+            for x in xrange(max_ensemble_size):
+                row_list.append(patch.ensemble_score[x])
+            result_list.append(row_list)
+    CreateCSVFile(result_list, results_detailed_file_name)
 
     plt.show()
