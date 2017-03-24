@@ -157,7 +157,7 @@ def extract_patch(image_name, ordered_images_dict, total_dets, patch_size, thres
         filtered_coordinates[ix][:4] = expand_patch(ordered_images_dict['normal'].shape, coordinate, increase_coordinate_percent)
 
     # Get NMS groups
-    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.40)
+    coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.2)
 
     image_name_no_ext = re.findall('([^\\/]*)\.\w+$', image_name)[0]
     patch_info_list = list()
@@ -323,53 +323,53 @@ def non_max_suppression(coordBoxes, overlapThresh):
     if len(coordBoxes) == 0:
         return []
 
-    pick = []
     x1 = coordBoxes[:, 0]
     y1 = coordBoxes[:, 1]
     x2 = coordBoxes[:, 2]
     y2 = coordBoxes[:, 3]
+    scores = coordBoxes[:, 4]
 
     area = (x2 - x1 + 1) * (y2 - y1 + 1)
-    indexes = np.argsort(y2)
+    #indexes = np.argsort(y2)
+    indexes = scores.argsort()[::-1]
     origSortedIndexes = indexes.copy()
 
     indexDict = {}
-    while len(indexes) > 0:
-        last = len(indexes) - 1
-        i = indexes[last]
-        pick.append(i)
-        suppress = [last] # create array of size indexes
-        #print("last is {0}".format(last))
-        for pos in xrange(0, last):
-            j = indexes[pos]
-            #print("Comparing index {0} and {1}".format(i, j))
-            # find the largest (x, y) coordinates for the start of
-            # the bounding box and the smallest (x, y) coordinatestest
-            # for the end of the bounding box
-            xx1 = max(x1[i], x1[j])
-            yy1 = max(y1[i], y1[j])
-            xx2 = min(x2[i], x2[j])
-            yy2 = min(y2[i], y2[j])
+    while indexes.size > 0:
+        #last = len(indexes) - 1
+        i = indexes[0]
 
-            # compute the width and height of the bounding box
-            w = max(0, xx2 - xx1 + 1)
-            h = max(0, yy2 - yy1 + 1)
+        # find the largest (x, y) coordinates for the start of
+        #  the bounding box and the smallest (x, y) coordinates
+        #  for the end of the bounding box
+        xx1 = np.maximum(x1[i], x1[indexes[0:]])
+        yy1 = np.maximum(y1[i], y1[indexes[0:]])
+        xx2 = np.minimum(x2[i], x2[indexes[0:]])
+        yy2 = np.minimum(y2[i], y2[indexes[0:]])
 
-            # compute the ratio of overlap between the computed
-            # bounding box and the bounding box in the area list
-            overlap = float(w * h) / area[j]
-            #print("overlap is: {0}.".format(overlap))
+        # compute the width and height of the bounding box
+        w = np.maximum(0, xx2 - xx1 + 1)
+        h = np.maximum(0, yy2 - yy1 + 1)
 
-            # if there is sufficient overlap, suppress the
-            # current bounding box
-            if overlap > overlapThresh:
-                #print("Supressing pos {0} which is index {1}".format(pos, j))
-                suppress.append(pos)
+        # compute the ratio of overlap
+        inter = w * h
+        overlap = inter / (area[i] + area[indexes[0:]] - inter)
 
-        indexDict[i] = origSortedIndexes[suppress]
-        origSortedIndexes = np.delete(origSortedIndexes, suppress)
-        #print ("index {0} overlaps with {1}".format(i, origSortedIndexes[suppress]))
-        indexes = np.delete(indexes, suppress)
+        # boxes to suppress
+        #suppress = np.concatenate(([i],
+        #    np.where(overlap > overlapThresh)[0]))
+        suppress = np.where(overlap > overlapThresh)[0]
+        indexDict[i] = indexes[suppress]
+
+        inds = np.where(overlap <= overlapThresh)[0]
+        indexes = indexes[inds]
+
+        # delete all indexes from the index list that are in the
+		# suppression list
+        #indexes = np.delete(indexes, suppress)
+
+
+
     return indexDict
 
 class label_stat:
@@ -377,6 +377,19 @@ class label_stat:
         self.count = 0
         self.percent_of_total = 0
         self.total_label_count = 0
+
+def combine_labels(current_label, current_label_score, new_label, new_label_score, min_score):
+
+    if (new_label_score > min_score):
+        # Condition 1
+        if (new_label_score > current_label_score):
+            return True
+
+        # Condition 2
+        if ((current_label in new_label) and (abs(new_label_score - current_label_score) < .02)):
+            return True
+
+    return False
 
 def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
     labels_dict = {}
@@ -432,93 +445,14 @@ def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
     best_label_percent_min = 0.02 # minimum percentage
     if (len(final_labels_score) > 0):
         for key in final_labels_score:
-            if (final_labels_score[key] > best_label_percent_min):
-                best_label_percent_min = final_labels_score[key]
-                best_label_percent = best_label_percent_min
+            if (combine_labels(best_label, best_label_percent, key, final_labels_score[key], best_label_percent_min)):
+                best_label_percent = final_labels_score[key]
                 best_label = key
 
     if (best_label != '-1'):
         print ("Label: {0}  Percent of total at each position greater than confidence of {1}: [{2}]"
                .format(best_label, confidence_threshold, str(best_label_percent)))
     return best_label, best_label_percent, best_coordinate, final_labels_score
-
-# def FindLabelFromGroup(patch_info_group, confidenceThreshold):
-#     bestLabel = -1
-#     bestAverageScore = 0
-#     bestCurrentArea = 0
-#     bestX1 = -1
-#     bestY1 = -1
-#     bestX2 = -1
-#     bestY2 = -1
-#     bestLengthScore = -1
-#     sameLabelDict = {}
-#     sameLabelDict[bestLabel] = 1
-#     newSortedList = list()
-#     labelRatio = -1
-#
-#     for ix, patch in enumerate(patch_info_group):
-#         imageLabel = patch.ensemble_label[ensemble_index]
-#
-#         if (imageLabel in sameLabelDict):
-#             sameLabelDict[imageLabel] = sameLabelDict[imageLabel] + 1
-#         else:
-#             sameLabelDict[imageLabel] = 1
-#
-#     # print("SameLabelDict: {0}".format(sameLabelDict))
-#     newSortedList = natsorted(patch_info_group, key=attrgetter('label'))
-#     # print("Dictionary: {0}".format(sameLabelDict))
-#     for ix, patch in enumerate(newSortedList):
-#         imageLabel = patch.ensemble_label[ensemble_index]
-#         sumScores = 0
-#         goodResult = True
-#         for x in xrange(len(imageLabel) + 1):
-#             score = float(patch.ensemble_score[ensemble_index][x])
-#             if (score >= confidenceThreshold):
-#                 sumScores = sumScores + score
-#             else:
-#                 goodResult = False
-#                 break  # break out of the current for loop
-#
-#         if (goodResult == True):
-#             averageScore = float(sumScores / len(imageLabel))
-#
-#             x1 = patch.detection_coordinate[1]
-#             y1 = patch.detection_coordinate[2]
-#             x2 = patch.detection_coordinate[3]
-#             y2 = patch.detection_coordinate[4]
-#             lengthScore = float(patch.detection_coordinate[0])
-#             currentArea = (x2 - x1 + 1) * (y2 - y1 + 1)
-#             sameLabelRatio = float(sameLabelDict[imageLabel]) / float(sameLabelDict[bestLabel])
-#
-#             sameButHighScore = (imageLabel == bestLabel or bestLabel < 0) and averageScore > bestAverageScore
-#             sameLengthHigherScore = len(str(imageLabel)) == len(str(bestLabel)) and averageScore > bestAverageScore  # and currentArea <= bestCurrentArea
-#             greaterLengthScore = lengthScore > bestLengthScore and (str(imageLabel) not in str(bestLabel)) and (sameLabelRatio >= 1) and currentArea <= bestCurrentArea
-#             greaterLengthScoreAndLength = lengthScore > bestLengthScore and len(str(imageLabel)) > len(str(bestLabel))
-#             bestInsideCurrent = str(bestLabel) in str(imageLabel) and len(str(bestLabel)) < len(str(imageLabel)) and ((str(imageLabel).find(str(bestLabel)) == 0 and bestX2 < x2) or (str(imageLabel).find(str(bestLabel)) > 0 and bestX1 > x1))
-#             moreInstancesofCurrent = sameLabelRatio >= 2 and (str(imageLabel) not in str(bestLabel))
-#             greaterLengthAndPreviousLabelAtIndex0 = str(imageLabel).find(str(bestLabel)) == 0 and len(str(bestLabel)) < len(str(imageLabel)) and sameLabelRatio >= 2
-#
-#             #resultTextList.append("Patch: {0},Label: {1},bestLabel: {2},lengthScore: {3},bestLengthScore: {4},area: {5},bestArea: {6},avgScore: {7},bestAvgScore: {8},sameLabelRatio: {9},sbhs: {10},slhs: {11},gls: {12},glsl: {13},mioc: {14},bic:{15},glli: {16}".format(imageFile, imageLabel, bestLabel, lengthScore, bestLengthScore, currentArea, bestCurrentArea, averageScore, bestAverageScore, sameLabelRatio, sameButHighScore, sameLengthHigherScore, greaterLengthScore, greaterLengthScoreAndLength, moreInstancesofCurrent, bestInsideCurrent, greaterLengthAndPreviousLabelAtIndex0))
-#             if ((sameButHighScore)
-#                 or (sameLengthHigherScore)
-#                 or (greaterLengthScore)
-#                 or (greaterLengthScoreAndLength)
-#                 # or moreInstancesofCurrent
-#                 or (bestInsideCurrent)
-#                 or (greaterLengthAndPreviousLabelAtIndex0)):
-#
-#
-#                 bestCurrentArea = currentArea
-#                 bestAverageScore = averageScore
-#                 bestLengthScore = lengthScore
-#                 bestX1 = x1
-#                 bestY1 = y1
-#                 bestX2 = x2
-#                 bestY2 = y2
-#                 bestLabel = imageLabel
-#                 labelRatio = float(sameLabelDict[bestLabel]) / float(len(patch_info_group))
-#
-#     return bestLabel, [bestX1, bestY1, bestX2, bestY2], labelRatio
 
 def find_best_label(ensemble_index, patch_info_list, recognition_confidence_threshold):
     groups = {}
@@ -623,6 +557,7 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
     images_dict['dark'] = cv2.convertScaleAbs(im_dark)
     ordered_images_dict = OrderedDict(sorted(images_dict.items()))
 
+    # Save light and dark images  - Used for debugging only
     #cv2.imwrite(os.path.join(output_path, 'light.jpg'), im_light)
     #cv2.imwrite(os.path.join(output_path, 'dark.jpg'), im_dark)
 
@@ -671,8 +606,8 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
     # dets = [[x1, y1, x2, y2, confidence, imageTypeIndex]]
     patches_info_list = extract_patch(image_name, ordered_images_dict, total_dets, PATCH_SIZE, CONF_THRESH)
 
-    # Save patches
-    save_patches(patches_info_list)
+    # Save patches - Used for debugging only
+    #save_patches(patches_info_list)
 
     # Convert images to numpy array
     image_list = list()
@@ -764,7 +699,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "159-hard-test3"
+    test_set = "variety_100"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
