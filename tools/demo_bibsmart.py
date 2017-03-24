@@ -18,7 +18,7 @@ from fast_rcnn.config import cfg
 from fast_rcnn.test import im_detect
 from fast_rcnn.nms_wrapper import nms
 from utils.timer import Timer
-from collections import defaultdict
+from collections import OrderedDict
 from natsort import natsorted
 from operator import itemgetter, attrgetter
 import matplotlib.pyplot as plt
@@ -47,6 +47,31 @@ class patch_info:
         self.best_label_percent = 0
         self.best_coordinate = []
         self.final_labels_score = []
+
+def apply_brightness_contrast_filters(image):
+    FILTERS_PHI = [0.9]
+    FILTERS_THETA = [1]
+    dark_image = None
+    light_image = None
+    for f_num in xrange( len(FILTERS_PHI) ):
+        phi = FILTERS_PHI[f_num]
+        theta = FILTERS_THETA[f_num]
+        maxIntensity = 255.0  # depends on dtype of image data
+        for intensity_num in xrange( 2 ):
+            # Apply filters for both intensities
+            if intensity_num == 0:
+                # Create Hi intensity image
+                print("Creating lightened image")
+                light_image = (maxIntensity / phi) * (image / (maxIntensity / theta)) ** 0.5
+            else:
+                # Create Low intensity image
+                print("Creating darkened image")
+                dark_image = (maxIntensity / phi) * (image / (maxIntensity / theta)) ** 2
+
+    return light_image, dark_image
+
+
+
 
 def vis_detections(im, class_name, patch_info_list, image_name, output_path, detection_confidence, recon_confidence):
     im = im[:, :, (2, 1, 0)]
@@ -119,17 +144,17 @@ def expand_patch(image_size, coordinate, percent):
 
     return [new_x1, new_y1, new_x2, new_y2]
 
-def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
+def extract_patch(image_name, ordered_images_dict, total_dets, patch_size, thresh):
     increase_coordinate_percent = 1.2
-    indexes = np.where(norm_coordinates[:, -1] >= thresh)[0]
+    indexes = np.where(total_dets[:, 4] >= thresh)[0]
     if len(indexes) == 0:
         return
 
-    filtered_coordinates = norm_coordinates[indexes, :]
+    filtered_coordinates = total_dets[indexes, :]
 
     # Expand all coordinates by 20%
     for ix, coordinate in enumerate(filtered_coordinates):
-        filtered_coordinates[ix][:4] = expand_patch(image.shape, coordinate, increase_coordinate_percent)
+        filtered_coordinates[ix][:4] = expand_patch(ordered_images_dict['normal'].shape, coordinate, increase_coordinate_percent)
 
     # Get NMS groups
     coordinate_groups_dict = non_max_suppression(filtered_coordinates, 0.40)
@@ -148,9 +173,12 @@ def extract_patch(image, image_name, norm_coordinates, patch_size, thresh):
             y1 = coordinate[1]
             x2 = coordinate[2]
             y2 = coordinate[3]
+            image_type_index = int(coordinate[5])
+            image = ordered_images_dict.items()[image_type_index][1]
+            image_type = ordered_images_dict.items()[image_type_index][0]
             new_patch_image = image[y1:y2, x1:x2]
             new_patch_image = resize_img(new_patch_image, patch_size[1], patch_size[0])
-            new_patch.patch_name = image_name_no_ext + "-patch-" + str(groupKey) + "-" + str(ix)
+            new_patch.patch_name = '{0}-{1}-patch-{2}-{3}'.format(image_name_no_ext, image_type, groupKey,ix)
             new_patch.image_data = new_patch_image
             new_patch.detection_coordinate = coordinate
             patch_info_list.append(new_patch)
@@ -578,66 +606,100 @@ def CreateCSVFile(csvData, csvFileName):
 def demo(net, recognition_net_list, image_name, im_folder, output_path):
     """Detect object classes in an image using pre-computed object proposals."""
 
-    # Load the demo image
-    im_file = os.path.join(cfg.DATA_DIR, 'demo', im_folder, image_name)
-    im_rgb = cv2.imread(im_file)
-
-    # Detect all object classes and regress object bounds
-    timer = Timer()
-    timer.tic()
-    scores, boxes = im_detect(net, im_rgb)
-    timer.toc()
-    print ('Detection took {:.3f}s for '
-           '{:d} object proposals').format(timer.total_time, boxes.shape[0])
-
-    # Perform recognition on patches
-    timer = Timer()
-    timer.tic()
-    # Read in image again as black and white because the conversion from RGB to grayscale darkened the image
-    im = cv2.imread(im_file, cv2.IMREAD_GRAYSCALE)
     CONF_THRESH = 0.1
     RECON_CONF_THRESH = 0.98
     NMS_THRESH = 1.0
     PATCH_SIZE = [40, 60]
-    for cls_ind, cls in enumerate(CLASSES[1:]):
-        cls_ind += 1 # because we skipped background
-        cls_boxes = boxes[:, 4*cls_ind:4*(cls_ind + 1)]
-        cls_scores = scores[:, cls_ind]
-        dets = np.hstack((cls_boxes,
-                          cls_scores[:, np.newaxis])).astype(np.float32)
-        keep = nms(dets, NMS_THRESH)
-        dets = dets[keep, :]
 
-        # Get all patches
-        # dets = [[x1, y1, x2, y2, confidence][x1, y1, x2, y2, confidence]]
-        patches_info_list = extract_patch(im, image_name, dets, PATCH_SIZE, CONF_THRESH)
+    # Load the demo image
+    totalTimer = Timer()
+    totalTimer.tic()
+    images_dict = {}
+    im_file = os.path.join(cfg.DATA_DIR, 'demo', im_folder, image_name)
+    im_rgb = cv2.imread(im_file)
+    im_light, im_dark = apply_brightness_contrast_filters(im_rgb)
+    images_dict['normal'] = im_rgb
+    images_dict['light'] = cv2.convertScaleAbs(im_light)
+    images_dict['dark'] = cv2.convertScaleAbs(im_dark)
+    ordered_images_dict = OrderedDict(sorted(images_dict.items()))
 
-        # Save patches
-        save_patches(patches_info_list)
+    #cv2.imwrite(os.path.join(output_path, 'light.jpg'), im_light)
+    #cv2.imwrite(os.path.join(output_path, 'dark.jpg'), im_dark)
 
-        # Convert images to numpy array
-        image_list = list()
-        for ix, patch in enumerate(patches_info_list):
-            image_list.append(patch.image_data)
-        numpy_patches = image_list_to_numpy_array(image_list, PATCH_SIZE)
+    # Detect all object classes and regress object bounds
+    patches_info_list = list()
+    timer = Timer()
+    timer.tic()
+    total_dets = None
+    images_type_count = 0
+    for image_type_key in ordered_images_dict:
+        im = images_dict[image_type_key]
+        scores, boxes = im_detect(net, im)
 
-        # Normalize patches
-        normalized_patches = NormalizeData(numpy_patches)
+        # Convert image to black and white using BGR2GRAY and not RGB2GRAY
+        im = cv2.cvtColor(im, cv2.COLOR_BGR2GRAY)
+        ordered_images_dict[image_type_key] = im
+        for cls_ind, cls in enumerate(CLASSES[1:]):
+            cls_ind += 1 # because we skipped background
+            cls_boxes = boxes[:, 4*cls_ind:4*(cls_ind + 1)]
+            cls_scores = scores[:, cls_ind]
+            dets = np.hstack((cls_boxes,
+                              cls_scores[:, np.newaxis])).astype(np.float32)
+            keep = nms(dets, NMS_THRESH)
+            dets = dets[keep, :]
 
-        # Perform recognition on boxes
-        batch_size = 50
-        for ix, net in enumerate(recognition_net_list):
-            do_recognition(ix, net, normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
+            #add the images type to end of dets
+            images_type_col = np.zeros(shape=(dets.shape[0], 1))
+            images_type_col[:] = images_type_count
+            dets = np.append(dets, images_type_col, 1)
 
-        # Find best labels for each patch group
-        find_best_label(ix, patches_info_list, RECON_CONF_THRESH)
+            if (total_dets == None):
+                total_dets = dets
+            else:
+                total_dets = np.append(total_dets, dets, 0)
+            images_type_count = images_type_count + 1
 
-        timer.toc()
-        print ('Recognition took {:.3f}s for '
-           '{:d} object proposals').format(timer.total_time, boxes.shape[0])
-        print('Recognition complete for image: {0}'.format(image_name))
+    timer.toc()
+    print ('Detection took {:.3f}s for '
+           '{:d} object proposals for %d image').format(timer.total_time, boxes.shape[0], len(images_dict))
 
-        vis_detections(im_rgb, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
+    # Perform recognition on patches
+    timer = Timer()
+    timer.tic()
+
+    # Get all patches
+    # dets = [[x1, y1, x2, y2, confidence, imageTypeIndex]]
+    patches_info_list = extract_patch(image_name, ordered_images_dict, total_dets, PATCH_SIZE, CONF_THRESH)
+
+    # Save patches
+    save_patches(patches_info_list)
+
+    # Convert images to numpy array
+    image_list = list()
+    for ix, patch in enumerate(patches_info_list):
+        image_list.append(patch.image_data)
+    numpy_patches = image_list_to_numpy_array(image_list, PATCH_SIZE)
+
+    # Normalize patches
+    normalized_patches = NormalizeData(numpy_patches)
+
+    # Perform recognition on boxes
+    batch_size = 50
+    for ix, net in enumerate(recognition_net_list):
+        do_recognition(ix, net, normalized_patches, patches_info_list, batch_size, PATCH_SIZE)
+
+    # Find best labels for each patch group
+    find_best_label(ix, patches_info_list, RECON_CONF_THRESH)
+
+    timer.toc()
+    print ('Recognition took {:.3f}s for '
+       '{:d} object proposals').format(timer.total_time, boxes.shape[0])
+    print('Recognition complete for image: {0}'.format(image_name))
+
+    vis_detections(im_rgb, cls, patches_info_list, image_name, output_path, CONF_THRESH, RECON_CONF_THRESH)
+
+    totalTimer.toc();
+    print ('Total time took {:.3f}s for %s'.format(totalTimer.total_time, image_name))
 
     return patches_info_list
 
@@ -702,7 +764,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "159-hard-test3"
+    test_set = "variety_test"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
