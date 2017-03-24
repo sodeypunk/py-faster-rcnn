@@ -429,7 +429,7 @@ def find_best_label_from_ensemble_group(patch_info_group, confidence_threshold):
 
     best_label = '-1'
     best_label_percent = 0
-    best_label_percent_min = 0.01 # minimum percentage
+    best_label_percent_min = 0.02 # minimum percentage
     if (len(final_labels_score) > 0):
         for key in final_labels_score:
             if (final_labels_score[key] > best_label_percent_min):
@@ -764,7 +764,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_test"
+    test_set = "159-hard-test3"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 
@@ -774,6 +774,8 @@ if __name__ == '__main__':
     results_detailed_file_name = os.path.join(output_path, 'resultsDetailed.csv')
     result_list = list()
     im_names = sorted(os.listdir(path))
+    total_all_images_timer = Timer()
+    total_all_images_timer.tic()
     for im_name in im_names:
         print '~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~'
         print 'Demo for data/demo/{}'.format(im_name)
@@ -797,6 +799,9 @@ if __name__ == '__main__':
             for x in xrange(max_ensemble_size):
                 row_list.append(patch.ensemble_score[x])
             result_list.append(row_list)
+
+    total_all_images_timer.toc()
+    print ('Total time for job: {0} seconds \nAverage time per image is {1} secs/img'.format(total_all_images_timer.total_time, round(total_all_images_timer.total_time / (len(im_names)), 2)))
     CreateCSVFile(result_list, results_detailed_file_name)
 
     plt.show()
