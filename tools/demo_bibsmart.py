@@ -607,7 +607,7 @@ def demo(net, recognition_net_list, image_name, im_folder, output_path):
     patches_info_list = extract_patch(image_name, ordered_images_dict, total_dets, PATCH_SIZE, CONF_THRESH)
 
     # Save patches - Used for debugging only
-    #save_patches(patches_info_list)
+    save_patches(patches_info_list)
 
     # Convert images to numpy array
     image_list = list()
@@ -699,7 +699,7 @@ if __name__ == '__main__':
     for i in xrange(2):
         _, _= im_detect(net, im)
 
-    test_set = "variety_100"
+    test_set = "variety_test"
     path = os.path.join(cfg.DATA_DIR, 'demo', test_set)
     output_path = os.path.join('output', test_set)
 

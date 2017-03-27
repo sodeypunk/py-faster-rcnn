@@ -35,10 +35,10 @@ __C.TRAIN = edict()
 
 # Scales to use during training (can list multiple scales)
 # Each scale is the pixel size of an image's shortest side
-__C.TRAIN.SCALES = (800,)
+__C.TRAIN.SCALES = (600, 800, 1000, 1200)
 
 # Max pixel size of the longest side of a scaled input image
-__C.TRAIN.MAX_SIZE = 800
+__C.TRAIN.MAX_SIZE = 1500
 
 # Images to use per minibatch
 __C.TRAIN.IMS_PER_BATCH = 2
@@ -149,10 +149,10 @@ __C.TEST.SVM = False
 __C.TEST.BBOX_REG = False
 
 # Propose boxes
-__C.TEST.HAS_RPN = False
+__C.TEST.HAS_RPN = True
 
 # Test using these proposals
-__C.TEST.PROPOSAL_METHOD = 'selective_search'
+__C.TEST.PROPOSAL_METHOD = 'rpn' #''selective_search'
 
 ## NMS threshold used on RPN proposals
 __C.TEST.RPN_NMS_THRESH = 0.7
