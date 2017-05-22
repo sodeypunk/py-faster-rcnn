@@ -1,0 +1,14 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project version="4">
+  <component name="WebServers">
+    <option name="servers">
+      <webServer id="ed31545a-bc02-45fe-ae62-e92ec77360fa" name="beast" url="http://192.168.1.224">
+        <fileTransfer host="192.168.1.224" port="21" rootFolder="/workspace/py-faster-rcnn" password="df98df9bdf9fdf9edf92df9d" username="sortvision">
+          <advancedOptions>
+            <advancedOptions dataProtectionLevel="Private" />
+          </advancedOptions>
+        </fileTransfer>
+      </webServer>
+    </option>
+  </component>
+</project>

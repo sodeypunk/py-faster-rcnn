@@ -118,6 +118,10 @@ class bibsmart(imdb):
         """
         Load image and bounding boxes info from txt files of Bibsmart.
         """
+        filter_file_match = re.findall('([\w\d-]+)_sat(\w+)', index) # for images that look like 775654-1019-0021_sat0.jpg
+        if (len(filter_file_match) > 0):
+            index = filter_file_match[0][0]
+            
         filename = os.path.join(self._data_path, 'Annotations', index + '.txt')
         # print 'Loading: {}'.format(filename)
         with open(filename) as f:
